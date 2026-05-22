@@ -117,14 +117,13 @@ def pure_pytorch_upfirdn2d(x, f, up=1, down=1, padding=0, flip_filter=False, gai
     if f.ndim == 1:
         # Separable
         f_w = f.view(1, 1, 1, -1).repeat(num_channels, 1, 1, 1)
-        x = torch.nn.functional.conv2d(x, f_w, groups=num_channels, padding=(0, f.shape[0] // 2))
+        x = torch.nn.functional.conv2d(x, f_w, groups=num_channels, padding=(0, 0))
         f_h = f.view(1, 1, -1, 1).repeat(num_channels, 1, 1, 1)
-        x = torch.nn.functional.conv2d(x, f_h, groups=num_channels, padding=(f.shape[0] // 2, 0))
+        x = torch.nn.functional.conv2d(x, f_h, groups=num_channels, padding=(0, 0))
     else:
         # 2D Filter
         f_2d = f.unsqueeze(0).unsqueeze(0).repeat(num_channels, 1, 1, 1)
-        kh, kw = f_2d.shape[2], f_2d.shape[3]
-        x = torch.nn.functional.conv2d(x, f_2d, groups=num_channels, padding=(kh // 2, kw // 2))
+        x = torch.nn.functional.conv2d(x, f_2d, groups=num_channels, padding=(0, 0))
         
     # Downsample
     if downx > 1 or downy > 1:
