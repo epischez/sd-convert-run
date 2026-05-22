@@ -26,7 +26,7 @@ jobs:
       - name: Clone Apple ml-stable-diffusion
         run: git clone --depth 1 https://github.com/apple/ml-stable-diffusion.git ml-stable-diffusion
       - name: Install ml-stable-diffusion package
-        run: pip install -e ml-stable-diffusion
+        run: pip install --no-deps -e ml-stable-diffusion
       - name: Download HF sources
         env:
           HF_HUB_ENABLE_HF_TRANSFER: 1
@@ -56,7 +56,7 @@ jobs:
       - name: Clone Apple ml-stable-diffusion
         run: git clone --depth 1 https://github.com/apple/ml-stable-diffusion.git ml-stable-diffusion
       - name: Install ml-stable-diffusion package
-        run: pip install -e ml-stable-diffusion
+        run: pip install --no-deps -e ml-stable-diffusion
       - name: Download HF sources
         env:
           HF_HUB_ENABLE_HF_TRANSFER: 1
