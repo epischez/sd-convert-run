@@ -1,0 +1,73 @@
+name: Convert MAT Model to CoreML
+
+on:
+  workflow_dispatch:
+    inputs:
+      compile_model:
+        description: 'Compile the model using Xcode (requires macOS runner)'
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  convert-model:
+    runs-on: macos-14
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install System Dependencies
+        run: |
+          echo "Checking Xcode version..."
+          xcodebuild -version
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Install coremltools, torch, timm, scipy, numpy
+          # Torch 2.2.0 is recommended since it is the latest officially tested with coremltools
+          pip install torch==2.2.0 coremltools==7.2 timm scipy numpy
+
+      - name: Run MAT CoreML Conversion
+        run: |
+          python scratch/convert_mat.py
+
+      - name: Archive MAT mlpackage
+        run: |
+          if [ -d "scratch/MAT.mlpackage" ]; then
+            echo "Zipping MAT.mlpackage..."
+            zip -r MAT_mlpackage.zip scratch/MAT.mlpackage
+          else
+            echo "❌ MAT.mlpackage not found!"
+            exit 1
+          fi
+
+      - name: Archive Compiled MAT mlmodelc
+        if: ${{ inputs.compile_model }}
+        run: |
+          if [ -d "scratch/MAT.mlmodelc" ]; then
+            echo "Zipping MAT.mlmodelc..."
+            zip -r MAT_mlmodelc.zip scratch/MAT.mlmodelc
+          else
+            echo "⚠️ MAT.mlmodelc not found or not compiled!"
+          fi
+
+      - name: Upload CoreML Package Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MAT-CoreML-Package
+          path: MAT_mlpackage.zip
+          retention-days: 7
+
+      - name: Upload Compiled Modelc Artifact
+        if: ${{ inputs.compile_model }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: MAT-Compiled-Modelc
+          path: MAT_mlmodelc.zip
+          retention-days: 7
