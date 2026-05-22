@@ -31,7 +31,7 @@ jobs:
           python -m pip install --upgrade pip
           # Install coremltools, torch, timm, scipy, numpy
           # Torch 2.2.0 is recommended since it is the latest officially tested with coremltools
-          pip install torch==2.2.0 coremltools==7.2 timm scipy numpy
+          pip install torch==2.2.0 coremltools==7.2 timm scipy 'numpy<1.27'
 
       - name: Run MAT CoreML Conversion
         run: |

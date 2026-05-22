@@ -20,8 +20,16 @@ if not os.path.exists(mat_repo_path):
 sys.path.insert(0, mat_repo_path)
 
 # 2. Monkey patch upfirdn2d and bias_act BEFORE importing networks to bypass MKL/CUDA code
+# Also monkey patch torch.full to support numpy scalars (e.g. np.float32) in newer NumPy versions
 import torch_utils.ops.bias_act as bias_act
 import torch_utils.ops.upfirdn2d as upfirdn2d
+
+orig_torch_full = torch.full
+def patched_torch_full(size, fill_value, *args, **kwargs):
+    if hasattr(fill_value, 'item'):
+        fill_value = fill_value.item()
+    return orig_torch_full(size, fill_value, *args, **kwargs)
+torch.full = patched_torch_full
 
 def pure_pytorch_bias_act(x, b=None, dim=1, act='linear', alpha=None, gain=None, clamp=None, impl='cuda'):
     # Reshape bias to align with dim
