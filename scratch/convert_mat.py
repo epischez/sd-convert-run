@@ -103,9 +103,9 @@ def pure_pytorch_upfirdn2d(x, f, up=1, down=1, padding=0, flip_filter=False, gai
         
     # Upsample by inserting zeros
     if upx > 1 or upy > 1:
-        upsampled = torch.zeros(batch_size, num_channels, in_height * upy, in_width * upx, dtype=x.dtype, device=x.device)
-        upsampled[:, :, ::upy, ::upx] = x
-        x = upsampled
+        x = x.reshape(batch_size, num_channels, in_height, 1, in_width, 1)
+        x = torch.nn.functional.pad(x, [0, upx - 1, 0, 0, 0, upy - 1])
+        x = x.reshape(batch_size, num_channels, in_height * upy, in_width * upx)
         
     # Pad or crop
     pad_l = max(padx0, 0)
