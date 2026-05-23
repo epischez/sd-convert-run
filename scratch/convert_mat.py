@@ -9,6 +9,19 @@ import coremltools as ct
 import shutil
 import subprocess
 
+# Globally override torch.autograd.profiler.record_function to bypass JIT tracer recording profiler ops
+class DummyRecordFunction:
+    def __init__(self, *args, **kwargs):
+        pass
+    def __enter__(self):
+        return self
+    def __exit__(self, *args, **kwargs):
+        pass
+
+torch.autograd.profiler.record_function = DummyRecordFunction
+if hasattr(torch, 'profiler'):
+    torch.profiler.record_function = DummyRecordFunction
+
 # 1. Ensure MAT repo is cloned
 mat_repo_path = os.path.abspath("scratch/MAT_repo")
 if not os.path.exists(mat_repo_path):
