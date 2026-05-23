@@ -133,6 +133,20 @@ def pure_pytorch_upfirdn2d(x, f, up=1, down=1, padding=0, flip_filter=False, gai
 
 upfirdn2d.upfirdn2d = pure_pytorch_upfirdn2d
 
+# Monkey patch conv2d_resample to handle groups parameter when tracing (since batch size/groups might be a tracer tensor)
+import torch_utils.ops.conv2d_resample as conv2d_resample
+orig_conv2d_resample = conv2d_resample.conv2d_resample
+def patched_conv2d_resample(x, w, f=None, up=1, down=1, padding=0, groups=1, flip_weight=True, flip_filter=False):
+    if hasattr(groups, 'item'):
+        groups = int(groups.item())
+    elif not isinstance(groups, int):
+        try:
+            groups = int(groups)
+        except Exception:
+            groups = 1
+    return orig_conv2d_resample(x, w, f=f, up=up, down=down, padding=padding, groups=groups, flip_weight=flip_weight, flip_filter=flip_filter)
+conv2d_resample.conv2d_resample = patched_conv2d_resample
+
 # Now import generator safely
 from networks.mat import Generator
 
