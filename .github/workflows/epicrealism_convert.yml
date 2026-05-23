@@ -49,6 +49,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      - name: Set up Swap Space
+        run: |
+          sudo swapoff -a
+          sudo fallocate -l 8G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          echo "=== Memory Info after Swap Setup ==="
+          free -h
+      
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
