@@ -78,24 +78,20 @@ jobs:
       - name: Install ml-stable-diffusion package
         run: pip install --no-deps -e ml-stable-diffusion
 
-      - name: Download model weights
+      - name: Install aria2 (project policy for multi-GB downloads)
+        run: brew install aria2
+
+      - name: Download model weights via aria2c
         env:
-          HF_HUB_ENABLE_HF_TRANSFER: 1
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          python -c "
-          from huggingface_hub import snapshot_download
-          # epiCRealism base — skip the monolithic single-file .safetensors, we need the diffusers layout.
-          snapshot_download(
-              'jzli/epiCRealism-v3',
-              local_dir='scratch/jzli_epiCRealism-v3',
-              ignore_patterns=['*.safetensors']
-          )
-          # LCM-LoRA — only fetched when used by --model-type lcm, but cheap so always grab.
-          snapshot_download(
-              'latent-consistency/lcm-lora-sdv1-5',
-              local_dir='scratch/latent-consistency_lcm-lora-sdv1-5'
-          )
-          "
+          python scratch/download_via_aria2.py \
+            jzli/epiCRealism-v3 \
+            scratch/jzli_epiCRealism-v3 \
+            --ignore '*.safetensors'
+          python scratch/download_via_aria2.py \
+            latent-consistency/lcm-lora-sdv1-5 \
+            scratch/latent-consistency_lcm-lora-sdv1-5
 
       - name: Run Conversion (Standard)
         if: ${{ inputs.model_type == 'standard' || inputs.model_type == 'both' }}
