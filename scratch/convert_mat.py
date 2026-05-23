@@ -19,6 +19,10 @@ if not os.path.exists(mat_repo_path):
 # Add MAT repo to sys.path so we can import legacy loader and generator
 sys.path.insert(0, mat_repo_path)
 
+# Monkey patch profiled_function to bypass JIT tracing errors with profiler ops
+import torch_utils.misc as misc
+misc.profiled_function = lambda fn: fn
+
 # 2. Monkey patch upfirdn2d and bias_act BEFORE importing networks to bypass MKL/CUDA code
 # Also monkey patch torch.full to support numpy scalars (e.g. np.float32) in newer NumPy versions
 import torch_utils.ops.bias_act as bias_act
