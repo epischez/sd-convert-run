@@ -13,8 +13,10 @@ os.chdir(workspace_dir)
 print(f"📂 Workspace: {workspace_dir}", flush=True)
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--attention-implementation", default="ORIGINAL", choices=["ORIGINAL", "SPLIT_EINSUM"])
+parser.add_argument("--model-type", default="standard", choices=["standard", "lcm"])
+parser.add_argument("--attention-implementation", default="SPLIT_EINSUM", choices=["ORIGINAL", "SPLIT_EINSUM"])
 parser.add_argument("--resolution", default="768x768", choices=["768x768", "512x768", "768x512", "512x512"])
+parser.add_argument("--quantize-nbits", default="8", choices=["8", "6", "4", "none"])
 args = parser.parse_args()
 
 # Map resolution to latent dimensions (resolution / 8)
@@ -28,22 +30,62 @@ latent_h, latent_w = res_map[args.resolution]
 
 model_id = "scratch/jzli_epiCRealism-v3"
 coreml_out_dir = os.path.join(workspace_dir, "scratch/temp_coreml_epicrealism")
-final_models_dir = os.path.join(workspace_dir, f"epicrealism_pureEvolutionV3_{args.attention_implementation.lower()}_{args.resolution}")
+final_models_dir = os.path.join(workspace_dir, f"epicrealism_{args.model_type}")
 
+# Clean temporary directories
 if os.path.exists(coreml_out_dir):
     shutil.rmtree(coreml_out_dir)
 
+model_version_path = model_id
+
+# Fusing LCM-LoRA if model-type is lcm
+if args.model_type == "lcm":
+    print("\n=== Fusing LCM-LoRA ===", flush=True)
+    import torch
+    from diffusers import StableDiffusionPipeline
+    
+    lcm_lora_dir = os.path.join(workspace_dir, "scratch/latent-consistency_lcm-lora-sdv1-5")
+    fused_dir = os.path.join(workspace_dir, "scratch/temp_fused_epicrealism_lcm")
+    
+    if not os.path.exists(lcm_lora_dir):
+        sys.exit(f"❌ Missing LCM-LoRA directory: {lcm_lora_dir}")
+        
+    print(f"📥 Loading base model: {model_id}", flush=True)
+    pipe = StableDiffusionPipeline.from_pretrained(
+        model_id, torch_dtype=torch.float32,
+        safety_checker=None, feature_extractor=None, requires_safety_checker=False,
+    )
+    print(f"📥 Loading LCM-LoRA: {lcm_lora_dir}", flush=True)
+    pipe.load_lora_weights(lcm_lora_dir)
+    print("🧪 Fusing LoRA", flush=True)
+    pipe.fuse_lora()
+    pipe.unload_lora_weights()
+    pipe.to(dtype=torch.float32)
+    
+    if os.path.exists(fused_dir):
+        shutil.rmtree(fused_dir)
+    print(f"💾 Saving pretrained fused model to: {fused_dir}", flush=True)
+    pipe.save_pretrained(fused_dir)
+    del pipe
+    import gc; gc.collect()
+    
+    model_version_path = fused_dir
+
+print("\n=== Step 1: Running torch2coreml ===", flush=True)
 is_mac = platform.system() == "Darwin"
 cmd = [sys.executable, "-m", "python_coreml_stable_diffusion.torch2coreml",
        "--convert-unet", "--chunk-unet",
        "--convert-text-encoder",
        "--convert-vae-decoder",
        "--convert-vae-encoder",
-       "--model-version", model_id,
+       "--model-version", model_version_path,
        "--attention-implementation", args.attention_implementation,
        "--latent-h", str(latent_h),
        "--latent-w", str(latent_w),
        "-o", coreml_out_dir]
+
+if args.quantize_nbits != "none":
+    cmd.extend(["--quantize-nbits", str(args.quantize_nbits)])
 
 if is_mac:
     cmd.append("--bundle-resources-for-swift-cli")
@@ -93,7 +135,10 @@ for fn, url in [
     print(f"✅ {fn}", flush=True)
 
 # Zip for upload
-zip_name = f"epicrealism_pureEvolutionV3_{args.attention_implementation.lower()}_{args.resolution}"
+zip_name = f"epicrealism_{args.model_type}_{args.attention_implementation.lower()}_{args.resolution}"
+if args.quantize_nbits != "none":
+    zip_name += f"_{args.quantize_nbits}bit"
+
 zip_path = os.path.join(workspace_dir, f"{zip_name}.zip")
 if os.path.exists(zip_path):
     os.remove(zip_path)

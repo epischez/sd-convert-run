@@ -3,14 +3,23 @@ name: Convert epiCRealism
 on:
   workflow_dispatch:
     inputs:
-      attention_implementation:
-        description: 'Attention implementation (ORIGINAL or SPLIT_EINSUM)'
-        default: 'ORIGINAL'
+      model_type:
+        description: 'Model Type to convert (standard, lcm, or both)'
+        default: 'both'
         required: true
         type: choice
         options:
-          - ORIGINAL
+          - both
+          - standard
+          - lcm
+      attention_implementation:
+        description: 'Attention implementation (SPLIT_EINSUM or ORIGINAL)'
+        default: 'SPLIT_EINSUM'
+        required: true
+        type: choice
+        options:
           - SPLIT_EINSUM
+          - ORIGINAL
       resolution:
         description: 'Resolution of the output model'
         default: '768x768'
@@ -21,10 +30,20 @@ on:
           - 512x768
           - 768x512
           - 512x512
+      quantize_nbits:
+        description: 'Weight quantization precision'
+        default: '8'
+        required: true
+        type: choice
+        options:
+          - '8'
+          - '6'
+          - '4'
+          - 'none'
 
 jobs:
   convert:
-    name: Convert epiCRealism (${{ inputs.attention_implementation }}, ${{ inputs.resolution }})
+    name: Convert epiCRealism
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -45,29 +64,47 @@ jobs:
       - name: Install ml-stable-diffusion package
         run: pip install --no-deps -e ml-stable-diffusion
         
-      - name: Download epiCRealism weights
+      - name: Download model weights
         env:
           HF_HUB_ENABLE_HF_TRANSFER: 1
         run: |
           python -c "
           from huggingface_hub import snapshot_download
-          import os
+          # Download base model (ignore large single-file checkpoint)
           snapshot_download(
               'jzli/epiCRealism-v3',
               local_dir='scratch/jzli_epiCRealism-v3',
               ignore_patterns=['*.safetensors']
           )
+          # Download LCM-LoRA model
+          snapshot_download(
+              'latent-consistency/lcm-lora-sdv1-5',
+              local_dir='scratch/latent-consistency_lcm-lora-sdv1-5'
+          )
           "
           
-      - name: Run Conversion
+      - name: Run Conversion (Standard)
+        if: ${{ inputs.model_type == 'standard' || inputs.model_type == 'both' }}
         run: |
-          python scratch/convert_epicrealism.py --attention-implementation ${{ inputs.attention_implementation }} --resolution ${{ inputs.resolution }}
+          python scratch/convert_epicrealism.py \
+            --model-type standard \
+            --attention-implementation ${{ inputs.attention_implementation }} \
+            --resolution ${{ inputs.resolution }} \
+            --quantize-nbits ${{ inputs.quantize_nbits }}
           
-      - name: Upload Artifact
+      - name: Run Conversion (LCM)
+        if: ${{ inputs.model_type == 'lcm' || inputs.model_type == 'both' }}
+        run: |
+          python scratch/convert_epicrealism.py \
+            --model-type lcm \
+            --attention-implementation ${{ inputs.attention_implementation }} \
+            --resolution ${{ inputs.resolution }} \
+            --quantize-nbits ${{ inputs.quantize_nbits }}
+          
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: epicrealism_pureEvolutionV3_${{ inputs.attention_implementation }}_${{ inputs.resolution }}
-          path: epicrealism_pureEvolutionV3_*.zip
+          name: epicrealism_converted_bundle
+          path: epicrealism_*.zip
           if-no-files-found: error
           retention-days: 7
-
