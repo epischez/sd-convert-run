@@ -114,35 +114,62 @@ if os.path.exists(final_models_dir):
     shutil.rmtree(final_models_dir)
 os.makedirs(final_models_dir, exist_ok=True)
 
-rename_map = [
-    ("text_encoder.mlpackage",  "TextEncoder.mlpackage"),
-    ("unet_chunk1.mlpackage",   "UnetChunk1.mlpackage"),
-    ("unet_chunk2.mlpackage",   "UnetChunk2.mlpackage"),
-    ("vae_decoder.mlpackage",   "VAEDecoder.mlpackage"),
-    ("vae_encoder.mlpackage",   "VAEEncoder.mlpackage"),
-]
+# When --bundle-resources-for-swift-cli runs on macOS, ml-stable-diffusion compiles each .mlpackage
+# into a .mlmodelc and stages everything in a "Resources/" subdirectory ready for iOS deployment.
+# On Linux, only .mlpackage files are produced; the consumer must compile them on a Mac afterward.
+compiled_dir = os.path.join(coreml_out_dir, "Resources")
+use_compiled = os.path.isdir(compiled_dir)
 
-import glob
-for src_glob, dst_name in rename_map:
-    matches = glob.glob(os.path.join(coreml_out_dir, f"*_{src_glob}"))
-    if not matches:
-        print(f"⚠️  missing {src_glob}", flush=True)
-        continue
-    s = matches[0]
-    d = os.path.join(final_models_dir, dst_name)
-    shutil.copytree(s, d)
-    print(f"✅ {dst_name} ← {os.path.basename(s)}", flush=True)
+if use_compiled:
+    print(f"🍎 Using compiled .mlmodelc bundle from {compiled_dir}", flush=True)
+    wanted = ["TextEncoder.mlmodelc", "UnetChunk1.mlmodelc", "UnetChunk2.mlmodelc",
+              "VAEDecoder.mlmodelc", "VAEEncoder.mlmodelc",
+              "vocab.json", "merges.txt"]
+    for name in wanted:
+        s = os.path.join(compiled_dir, name)
+        d = os.path.join(final_models_dir, name)
+        if not os.path.exists(s):
+            print(f"⚠️  missing {name} in compiled output (skipping)", flush=True)
+            continue
+        if os.path.isdir(s):
+            shutil.copytree(s, d)
+        else:
+            shutil.copy2(s, d)
+        print(f"✅ {name}", flush=True)
+    # Drop single Unet.mlmodelc if it landed alongside chunks — runtime expects chunked-only.
+    single = os.path.join(final_models_dir, "Unet.mlmodelc")
+    if os.path.exists(single):
+        shutil.rmtree(single)
+else:
+    print(f"🐧 Using raw .mlpackage outputs from {coreml_out_dir} (Linux build — needs Mac-side compile before iOS deploy)", flush=True)
+    rename_map = [
+        ("text_encoder.mlpackage",  "TextEncoder.mlpackage"),
+        ("unet_chunk1.mlpackage",   "UnetChunk1.mlpackage"),
+        ("unet_chunk2.mlpackage",   "UnetChunk2.mlpackage"),
+        ("vae_decoder.mlpackage",   "VAEDecoder.mlpackage"),
+        ("vae_encoder.mlpackage",   "VAEEncoder.mlpackage"),
+    ]
+    import glob
+    for src_glob, dst_name in rename_map:
+        matches = glob.glob(os.path.join(coreml_out_dir, f"*_{src_glob}"))
+        if not matches:
+            print(f"⚠️  missing {src_glob}", flush=True)
+            continue
+        s = matches[0]
+        d = os.path.join(final_models_dir, dst_name)
+        shutil.copytree(s, d)
+        print(f"✅ {dst_name} ← {os.path.basename(s)}", flush=True)
 
-# Tokenizer files
-print("📥 Fetching tokenizer vocab/merges…", flush=True)
-import requests
-for fn, url in [
-    ("vocab.json",  "https://huggingface.co/openai/clip-vit-base-patch32/resolve/main/vocab.json"),
-    ("merges.txt",  "https://huggingface.co/openai/clip-vit-base-patch32/resolve/main/merges.txt"),
-]:
-    with open(os.path.join(final_models_dir, fn), "wb") as f:
-        f.write(requests.get(url, timeout=60).content)
-    print(f"✅ {fn}", flush=True)
+    # Tokenizer files (only fetch when compiled bundle didn't already include them).
+    print("📥 Fetching tokenizer vocab/merges…", flush=True)
+    import requests
+    for fn, url in [
+        ("vocab.json",  "https://huggingface.co/openai/clip-vit-base-patch32/resolve/main/vocab.json"),
+        ("merges.txt",  "https://huggingface.co/openai/clip-vit-base-patch32/resolve/main/merges.txt"),
+    ]:
+        with open(os.path.join(final_models_dir, fn), "wb") as f:
+            f.write(requests.get(url, timeout=60).content)
+        print(f"✅ {fn}", flush=True)
 
 # Zip for upload
 zip_name = f"epicrealism_{args.model_type}_{args.attention_implementation.lower()}_{args.resolution}"

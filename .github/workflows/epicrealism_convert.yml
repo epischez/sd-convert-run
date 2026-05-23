@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       model_type:
-        description: 'Model Type to convert (standard, lcm, or both)'
+        description: 'Model type to convert (standard, lcm, or both)'
         default: 'both'
         required: true
         type: choice
@@ -13,86 +13,85 @@ on:
           - standard
           - lcm
       attention_implementation:
-        description: 'Attention implementation (SPLIT_EINSUM or ORIGINAL)'
-        default: 'SPLIT_EINSUM'
+        description: 'Attention implementation (ORIGINAL chunked → GPU path, proven recipe on iPhone 15 Pro Max)'
+        default: 'ORIGINAL'
         required: true
         type: choice
         options:
-          - SPLIT_EINSUM
           - ORIGINAL
+          - SPLIT_EINSUM
       resolution:
-        description: 'Resolution of the output model'
-        default: '768x768'
+        description: 'Latent resolution. 512x512 is the sweet spot for ORIGINAL chunked.'
+        default: '512x512'
         required: true
         type: choice
         options:
-          - 768x768
+          - 512x512
           - 512x768
           - 768x512
-          - 512x512
+          - 768x768
       quantize_nbits:
-        description: 'Weight quantization precision'
-        default: '8'
+        description: 'Weight quantization (none=FP16). Start with none to validate; quantize later.'
+        default: 'none'
         required: true
         type: choice
         options:
+          - 'none'
           - '8'
           - '6'
           - '4'
-          - 'none'
 
 jobs:
   convert:
-    name: Convert epiCRealism
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
+    name: Convert epiCRealism (macOS, compiled .mlmodelc)
+    runs-on: macos-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Set up Swap Space
+
+      - name: Show runner info
         run: |
-          sudo swapoff -a
-          sudo fallocate -l 8G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-          echo "=== Memory Info after Swap Setup ==="
-          free -h
-      
+          uname -a
+          sw_vers
+          xcodebuild -version
+          sysctl hw.memsize hw.ncpu
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          
+
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
-          pip install 'coremltools>=7.1,<8' 'numpy<1.27' 'huggingface_hub==0.25.2' 'diffusers==0.27.2' 'transformers==4.40.0' torch torchvision 'peft==0.11.1' accelerate hf_transfer safetensors requests scipy pytest scikit-learn invisible-watermark matplotlib diffusionkit
-          
+          pip install 'coremltools>=7.1,<8' 'numpy<1.27' 'huggingface_hub==0.25.2' \
+            'diffusers==0.27.2' 'transformers==4.40.0' torch torchvision \
+            'peft==0.11.1' accelerate hf_transfer safetensors requests scipy
+
       - name: Clone Apple ml-stable-diffusion
         run: git clone --depth 1 https://github.com/apple/ml-stable-diffusion.git ml-stable-diffusion
-        
+
       - name: Install ml-stable-diffusion package
         run: pip install --no-deps -e ml-stable-diffusion
-        
+
       - name: Download model weights
         env:
           HF_HUB_ENABLE_HF_TRANSFER: 1
         run: |
           python -c "
           from huggingface_hub import snapshot_download
-          # Download base model (ignore large single-file checkpoint)
+          # epiCRealism base — skip the monolithic single-file .safetensors, we need the diffusers layout.
           snapshot_download(
               'jzli/epiCRealism-v3',
               local_dir='scratch/jzli_epiCRealism-v3',
               ignore_patterns=['*.safetensors']
           )
-          # Download LCM-LoRA model
+          # LCM-LoRA — only fetched when used by --model-type lcm, but cheap so always grab.
           snapshot_download(
               'latent-consistency/lcm-lora-sdv1-5',
               local_dir='scratch/latent-consistency_lcm-lora-sdv1-5'
           )
           "
-          
+
       - name: Run Conversion (Standard)
         if: ${{ inputs.model_type == 'standard' || inputs.model_type == 'both' }}
         run: |
@@ -101,7 +100,7 @@ jobs:
             --attention-implementation ${{ inputs.attention_implementation }} \
             --resolution ${{ inputs.resolution }} \
             --quantize-nbits ${{ inputs.quantize_nbits }}
-          
+
       - name: Run Conversion (LCM)
         if: ${{ inputs.model_type == 'lcm' || inputs.model_type == 'both' }}
         run: |
@@ -110,11 +109,22 @@ jobs:
             --attention-implementation ${{ inputs.attention_implementation }} \
             --resolution ${{ inputs.resolution }} \
             --quantize-nbits ${{ inputs.quantize_nbits }}
-          
-      - name: Upload Artifacts
+
+      - name: Show final bundle contents
+        run: |
+          for d in epicrealism_standard epicrealism_lcm; do
+            if [ -d "$d" ]; then
+              echo "=== $d ==="
+              ls -la "$d"
+              du -sh "$d"
+            fi
+          done
+          ls -la epicrealism_*.zip 2>/dev/null || true
+
+      - name: Upload compiled .mlmodelc bundles
         uses: actions/upload-artifact@v4
         with:
-          name: epicrealism_converted_bundle
+          name: epicrealism_mlmodelc_${{ inputs.attention_implementation }}_${{ inputs.resolution }}_${{ inputs.quantize_nbits }}
           path: epicrealism_*.zip
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 14
