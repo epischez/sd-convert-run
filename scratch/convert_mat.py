@@ -288,8 +288,9 @@ def patched_swin_forward(self, x, x_size, mask=None):
         if mask is not None:
             mask = shifted_mask
 
-    x = shortcut + x
-    x = x + self.mlp(x)
+    # Correct MAT FFN logic (matches networks/mat.py)
+    x = self.fuse(torch.cat([shortcut, x], dim=-1))
+    x = self.mlp(x)
     return x, mask
 
 SwinTransformerBlock.forward = patched_swin_forward
