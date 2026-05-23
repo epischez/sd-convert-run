@@ -165,7 +165,68 @@ def patched_conv2d_resample(x, w, f=None, up=1, down=1, padding=0, groups=1, fli
 conv2d_resample.conv2d_resample = patched_conv2d_resample
 
 # Now import generator safely
-from networks.mat import Generator
+from networks.mat import Generator, SwinTransformerBlock, window_partition, window_reverse
+
+def patched_swin_forward(self, x, x_size, mask=None):
+    H, W = x_size
+    B, L, C = x.shape
+    assert L == H * W, "input feature has wrong size"
+
+    shortcut = x
+    x = x.view(B, H, W, C)
+    if mask is not None:
+        mask = mask.view(B, H, W, 1)
+
+    # cyclic shift
+    if self.shift_size > 0:
+        shifted_x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
+        if mask is not None:
+            shifted_mask = torch.roll(mask, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
+    else:
+        shifted_x = x
+        if mask is not None:
+            shifted_mask = mask
+
+    # partition windows
+    x_windows = window_partition(shifted_x, self.window_size)  # nW*B, window_size, window_size, C
+    x_windows = x_windows.view(-1, self.window_size * self.window_size, C)  # nW*B, window_size*window_size, C
+    if mask is not None:
+        mask_windows = window_partition(shifted_mask, self.window_size)
+        mask_windows = mask_windows.view(-1, self.window_size * self.window_size, 1)
+    else:
+        mask_windows = None
+
+    # Use registered attn_mask directly to avoid tracing calculate_mask slice assignments
+    attn_windows, mask_windows = self.attn(x_windows, mask_windows, mask=self.attn_mask)
+
+    # merge windows
+    attn_windows = attn_windows.view(-1, self.window_size, self.window_size, C)
+    shifted_x = window_reverse(attn_windows, self.window_size, H, W)  # B H' W' C
+    if mask is not None:
+        mask_windows = mask_windows.view(-1, self.window_size, self.window_size, 1)
+        shifted_mask = window_reverse(mask_windows, self.window_size, H, W)
+
+    shifted_x = shifted_x.view(B, H * W, C)
+    if mask is not None:
+        shifted_mask = shifted_mask.view(B, H * W, 1)
+
+    # reverse cyclic shift
+    if self.shift_size > 0:
+        x = torch.roll(shifted_x.view(B, H, W, C), shifts=(self.shift_size, self.shift_size), dims=(1, 2))
+        x = x.view(B, H * W, C)
+        if mask is not None:
+            mask = torch.roll(shifted_mask.view(B, H, W, 1), shifts=(self.shift_size, self.shift_size), dims=(1, 2))
+            mask = mask.view(B, H * W, 1)
+    else:
+        x = shifted_x
+        if mask is not None:
+            mask = shifted_mask
+
+    x = shortcut + x
+    x = x + self.mlp(x)
+    return x, mask
+
+SwinTransformerBlock.forward = patched_swin_forward
 
 def download_file(url, dest_path):
     if os.path.exists(dest_path):
