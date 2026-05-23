@@ -63,13 +63,14 @@ jobs:
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
-          # pytest + scikit-learn are required transitively: coremltools.converters.mil.testing_utils
-          # (pulled in by chunk_mlprogram.py) imports pytest at module load; testing_utils also
-          # touches sklearn helpers. Missing either makes torch2coreml fail before doing any work.
+          # Verbatim dep set from the previously-working Ubuntu workflow. Every entry has a
+          # transitive importer somewhere in coremltools / diffusers / ml-stable-diffusion — do
+          # not trim. (Specifically: pytest + scikit-learn pulled in via
+          # coremltools.converters.mil.testing_utils, used by chunk_mlprogram.py.)
           pip install 'coremltools>=7.1,<8' 'numpy<1.27' 'huggingface_hub==0.25.2' \
             'diffusers==0.27.2' 'transformers==4.40.0' torch torchvision \
             'peft==0.11.1' accelerate hf_transfer safetensors requests scipy \
-            pytest scikit-learn
+            pytest scikit-learn invisible-watermark matplotlib diffusionkit
 
       - name: Clone Apple ml-stable-diffusion
         run: git clone --depth 1 https://github.com/apple/ml-stable-diffusion.git ml-stable-diffusion
