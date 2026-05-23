@@ -150,10 +150,15 @@ def pure_pytorch_upfirdn2d(x, f, up=1, down=1, padding=0, flip_filter=False, gai
 
 upfirdn2d.upfirdn2d = pure_pytorch_upfirdn2d
 
-# Monkey patch conv2d_resample to handle groups parameter when tracing (since batch size/groups might be a tracer tensor)
+# Monkey patch conv2d_resample to:
+# 1. Cast groups to int for JIT tracer compatibility.
+# 2. Bypass transpose convolution (when up > 1) because CoreML does not support dynamic weights for transpose conv.
+#    Instead, it falls back to the reference path which uses upfirdn2d upsampling + standard conv2d.
 import torch_utils.ops.conv2d_resample as conv2d_resample
-orig_conv2d_resample = conv2d_resample.conv2d_resample
 def patched_conv2d_resample(x, w, f=None, up=1, down=1, padding=0, groups=1, flip_weight=True, flip_filter=False):
+    from torch_utils.ops.conv2d_resample import _get_weight_shape, _get_filter_size, _parse_padding, _conv2d_wrapper
+    import torch_utils.ops.upfirdn2d as upfirdn2d
+    
     if hasattr(groups, 'item'):
         groups = int(groups.item())
     elif not isinstance(groups, int):
@@ -161,7 +166,63 @@ def patched_conv2d_resample(x, w, f=None, up=1, down=1, padding=0, groups=1, fli
             groups = int(groups)
         except Exception:
             groups = 1
-    return orig_conv2d_resample(x, w, f=f, up=up, down=down, padding=padding, groups=groups, flip_weight=flip_weight, flip_filter=flip_filter)
+            
+    # Validate arguments.
+    assert isinstance(x, torch.Tensor) and (x.ndim == 4)
+    assert isinstance(w, torch.Tensor) and (w.ndim == 4) and (w.dtype == x.dtype)
+    assert f is None or (isinstance(f, torch.Tensor) and f.ndim in [1, 2] and f.dtype == torch.float32)
+    assert isinstance(up, int) and (up >= 1)
+    assert isinstance(down, int) and (down >= 1)
+    assert isinstance(groups, int) and (groups >= 1)
+    out_channels, in_channels_per_group, kh, kw = _get_weight_shape(w)
+    fw, fh = _get_filter_size(f)
+    px0, px1, py0, py1 = _parse_padding(padding)
+
+    # Adjust padding to account for up/downsampling.
+    if up > 1:
+        px0 += (fw + up - 1) // 2
+        px1 += (fw - up) // 2
+        py0 += (fh + up - 1) // 2
+        py1 += (fh - up) // 2
+    if down > 1:
+        px0 += (fw - down + 1) // 2
+        px1 += (fw - down) // 2
+        py0 += (fh - down + 1) // 2
+        py1 += (fh - down) // 2
+
+    # Fast path: 1x1 convolution with downsampling only => downsample first, then convolve.
+    if kw == 1 and kh == 1 and (down > 1 and up == 1):
+        x = upfirdn2d.upfirdn2d(x=x, f=f, down=down, padding=[px0,px1,py0,py1], flip_filter=flip_filter)
+        x = _conv2d_wrapper(x=x, w=w, groups=groups, flip_weight=flip_weight)
+        return x
+
+    # Fast path: 1x1 convolution with upsampling only => convolve first, then upsample.
+    if kw == 1 and kh == 1 and (up > 1 and down == 1):
+        x = _conv2d_wrapper(x=x, w=w, groups=groups, flip_weight=flip_weight)
+        x = upfirdn2d.upfirdn2d(x=x, f=f, up=up, padding=[px0,px1,py0,py1], gain=up**2, flip_filter=flip_filter)
+        return x
+
+    # Fast path: downsampling only => use strided convolution.
+    if down > 1 and up == 1:
+        x = upfirdn2d.upfirdn2d(x=x, f=f, padding=[px0,px1,py0,py1], flip_filter=flip_filter)
+        x = _conv2d_wrapper(x=x, w=w, stride=down, groups=groups, flip_weight=flip_weight)
+        return x
+
+    # [CoreML Bypass] Transpose conv (up > 1) fast path is omitted here.
+    # It will fall through to the reference implementation below.
+
+    # Fast path: no up/downsampling, padding supported by the underlying implementation => use plain conv2d.
+    if up == 1 and down == 1:
+        if px0 == px1 and py0 == py1 and px0 >= 0 and py0 >= 0:
+            return _conv2d_wrapper(x=x, w=w, padding=[py0,px0], groups=groups, flip_weight=flip_weight)
+
+    # Fallback: Generic reference implementation.
+    x = upfirdn2d.upfirdn2d(x=x, f=(f if up > 1 else None), up=up, padding=[px0,px1,py0,py1], gain=up**2, flip_filter=flip_filter)
+    x = _conv2d_wrapper(x=x, w=w, groups=groups, flip_weight=flip_weight)
+    if down > 1:
+        x = upfirdn2d.upfirdn2d(x=x, f=f, down=down, flip_filter=flip_filter)
+    return x
+
 conv2d_resample.conv2d_resample = patched_conv2d_resample
 
 # Now import generator safely
