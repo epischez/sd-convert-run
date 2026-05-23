@@ -1,0 +1,72 @@
+name: Convert epiCRealism
+
+on:
+  workflow_dispatch:
+    inputs:
+      attention_implementation:
+        description: 'Attention implementation (ORIGINAL or SPLIT_EINSUM)'
+        default: 'ORIGINAL'
+        required: true
+        type: choice
+        options:
+          - ORIGINAL
+          - SPLIT_EINSUM
+      resolution:
+        description: 'Resolution of the output model'
+        default: '768x768'
+        required: true
+        type: choice
+        options:
+          - 768x768
+          - 512x768
+          - 768x512
+          - 512x512
+
+jobs:
+  convert:
+    name: Convert epiCRealism (${{ inputs.attention_implementation }}, ${{ inputs.resolution }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install 'coremltools>=7.1,<8' 'numpy<1.27' 'huggingface_hub==0.25.2' 'diffusers==0.27.2' 'transformers==4.40.0' torch torchvision accelerate hf_transfer requests safetensors
+          
+      - name: Clone Apple ml-stable-diffusion
+        run: git clone --depth 1 https://github.com/apple/ml-stable-diffusion.git ml-stable-diffusion
+        
+      - name: Install ml-stable-diffusion package
+        run: pip install --no-deps -e ml-stable-diffusion
+        
+      - name: Download epiCRealism weights
+        env:
+          HF_HUB_ENABLE_HF_TRANSFER: 1
+        run: |
+          python -c "
+          from huggingface_hub import snapshot_download
+          import os
+          snapshot_download(
+              'jzli/epiCRealism-v3',
+              local_dir='scratch/jzli_epiCRealism-v3',
+              ignore_patterns=['*.safetensors']
+          )
+          "
+          
+      - name: Run Conversion
+        run: |
+          python scratch/convert_epicrealism.py --attention-implementation ${{ inputs.attention_implementation }} --resolution ${{ inputs.resolution }}
+          
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: epicrealism_pureEvolutionV3_${{ lower(inputs.attention_implementation) }}_${{ inputs.resolution }}
+          path: epicrealism_pureEvolutionV3_${{ lower(inputs.attention_implementation) }}_${{ inputs.resolution }}.zip
+          if-no-files-found: error
+          retention-days: 7
