@@ -71,33 +71,43 @@ if args.model_type == "lcm":
     
     model_version_path = fused_dir
 
-print("\n=== Step 1: Running torch2coreml ===", flush=True)
+print("\n=== Step 1a: Converting Text Encoder and VAE (No quantization) ===", flush=True)
 is_mac = platform.system() == "Darwin"
-cmd = [sys.executable, "-m", "python_coreml_stable_diffusion.torch2coreml",
-       "--convert-unet", "--chunk-unet",
-       "--convert-text-encoder",
-       "--convert-vae-decoder",
-       "--convert-vae-encoder",
-       "--model-version", model_version_path,
-       "--attention-implementation", args.attention_implementation,
-       "--latent-h", str(latent_h),
-       "--latent-w", str(latent_w),
-       "-o", coreml_out_dir]
-
-if args.quantize_nbits != "none":
-    cmd.extend(["--quantize-nbits", str(args.quantize_nbits)])
-
-if is_mac:
-    cmd.append("--bundle-resources-for-swift-cli")
-
 env = dict(os.environ)
 ml_sd = os.path.join(workspace_dir, "ml-stable-diffusion")
 env["PYTHONPATH"] = ml_sd + os.pathsep + env.get("PYTHONPATH", "")
 if is_mac:
     env["DEVELOPER_DIR"] = "/Applications/Xcode.app/Contents/Developer"
 
-print(f"🚀 Running: {' '.join(cmd)}", flush=True)
-subprocess.run(cmd, env=env, check=True)
+cmd_vae_text = [sys.executable, "-m", "python_coreml_stable_diffusion.torch2coreml",
+                "--convert-text-encoder",
+                "--convert-vae-decoder",
+                "--convert-vae-encoder",
+                "--model-version", model_version_path,
+                "-o", coreml_out_dir]
+if is_mac:
+    cmd_vae_text.append("--bundle-resources-for-swift-cli")
+
+print(f"🚀 Running: {' '.join(cmd_vae_text)}", flush=True)
+subprocess.run(cmd_vae_text, env=env, check=True)
+
+print("\n=== Step 1b: Converting UNet (Quantized & chunked if specified) ===", flush=True)
+cmd_unet = [sys.executable, "-m", "python_coreml_stable_diffusion.torch2coreml",
+            "--convert-unet", "--chunk-unet",
+            "--model-version", model_version_path,
+            "--attention-implementation", args.attention_implementation,
+            "--latent-h", str(latent_h),
+            "--latent-w", str(latent_w),
+            "-o", coreml_out_dir]
+
+if args.quantize_nbits != "none":
+    cmd_unet.extend(["--quantize-nbits", str(args.quantize_nbits)])
+
+if is_mac:
+    cmd_unet.append("--bundle-resources-for-swift-cli")
+
+print(f"🚀 Running: {' '.join(cmd_unet)}", flush=True)
+subprocess.run(cmd_unet, env=env, check=True)
 
 print("\n=== Step 2: Stage final dir ===", flush=True)
 if os.path.exists(final_models_dir):
