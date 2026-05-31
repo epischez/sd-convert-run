@@ -271,7 +271,7 @@ def patched_modulated_conv2d_forward(self, x, style):
     weight = self.weight * style
 
     if self.demodulate:
-        decoefs = (weight.pow(2).sum(dim=[2, 3, 4]) + 1e-8).rsqrt()
+        decoefs = (weight.pow(2).sum(dim=[2, 3, 4]) + 1e-4).rsqrt()
         weight = weight * decoefs.view(batch, self.out_channels, 1, 1, 1)
 
     weight = weight.view(batch * self.out_channels, in_channels, self.kernel_size, self.kernel_size)
@@ -281,13 +281,34 @@ def patched_modulated_conv2d_forward(self, x, style):
     out = x.view(batch, self.out_channels, *x.shape[2:])
     return out
 
+def patched_normalize_2nd_moment(x, dim=1, eps=1e-4):
+    return x * (x.square().mean(dim=dim, keepdim=True) + eps).rsqrt()
+
+def patched_conv_partial_forward(self, x, mask=None):
+    if mask is not None:
+        with torch.no_grad():
+            if self.weight_maskUpdater.type() != x.type():
+                self.weight_maskUpdater = self.weight_maskUpdater.to(x)
+            update_mask = F.conv2d(mask, self.weight_maskUpdater, bias=None, stride=self.stride, padding=self.padding)
+            mask_ratio = self.slide_winsize / (update_mask + 1e-4)
+            update_mask = torch.clamp(update_mask, 0, 1)  # 0 or 1
+            mask_ratio = torch.mul(mask_ratio, update_mask)
+        x = self.conv(x)
+        x = torch.mul(x, mask_ratio)
+        return x, update_mask
+    else:
+        x = self.conv(x)
+        return x, None
+
 import networks.basic_module as basic_module
 basic_module.FullyConnectedLayer.forward = patched_fc_forward
 basic_module.Conv2dLayer.forward = patched_conv2d_layer_forward
 basic_module.ModulatedConv2d.forward = patched_modulated_conv2d_forward
+basic_module.normalize_2nd_moment = patched_normalize_2nd_moment
 
 # Now import generator safely
-from networks.mat import Generator, SwinTransformerBlock, window_partition, window_reverse
+from networks.mat import Generator, SwinTransformerBlock, Conv2dLayerPartial, window_partition, window_reverse
+Conv2dLayerPartial.forward = patched_conv_partial_forward
 
 def patched_swin_forward(self, x, x_size, mask=None):
     H, W = x_size
