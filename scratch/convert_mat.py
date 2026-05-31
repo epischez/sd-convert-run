@@ -230,14 +230,29 @@ def patched_conv2d_resample(x, w, f=None, up=1, down=1, padding=0, groups=1, fli
 conv2d_resample.conv2d_resample = patched_conv2d_resample
 
 def patched_fc_forward(self, x):
-    w = self.weight
+    # self.weight has shape [out_features, in_features]
+    w_conv = self.weight.view(self.weight.shape[0], self.weight.shape[1], 1, 1)
     b = self.bias
-    if self.activation == 'linear' and b is not None:
-        x = x.matmul(w.t())
-        out = x + b.reshape([-1 if i == x.ndim-1 else 1 for i in range(x.ndim)])
+    
+    ndim = x.ndim
+    if ndim == 2:
+        x_4d = x.unsqueeze(2).unsqueeze(3)
+        out_4d = F.conv2d(x_4d, w_conv, b, stride=1, padding=0)
+        out = out_4d.squeeze(3).squeeze(2)
+    elif ndim == 3:
+        x_4d = x.transpose(1, 2).unsqueeze(3)
+        out_4d = F.conv2d(x_4d, w_conv, b, stride=1, padding=0)
+        out = out_4d.squeeze(3).transpose(1, 2)
     else:
-        x = x.matmul(w.t())
-        out = bias_act.bias_act(x, b, act=self.activation, dim=x.ndim-1)
+        x = x.matmul(self.weight.t())
+        if b is not None:
+            out = x + b.reshape([-1 if i == x.ndim-1 else 1 for i in range(x.ndim)])
+        else:
+            out = x
+            
+    if self.activation != 'linear':
+        out = bias_act.bias_act(out, act=self.activation, dim=out.ndim-1)
+        
     return out
 
 def patched_conv2d_layer_forward(self, x, gain=1):
