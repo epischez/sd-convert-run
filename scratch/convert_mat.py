@@ -227,8 +227,48 @@ def patched_conv2d_resample(x, w, f=None, up=1, down=1, padding=0, groups=1, fli
     if down > 1:
         x = upfirdn2d.upfirdn2d(x=x, f=f, down=down, flip_filter=flip_filter)
     return x
-
 conv2d_resample.conv2d_resample = patched_conv2d_resample
+
+def patched_fc_forward(self, x):
+    w = self.weight
+    b = self.bias
+    if self.activation == 'linear' and b is not None:
+        x = x.matmul(w.t())
+        out = x + b.reshape([-1 if i == x.ndim-1 else 1 for i in range(x.ndim)])
+    else:
+        x = x.matmul(w.t())
+        out = bias_act.bias_act(x, b, act=self.activation, dim=x.ndim-1)
+    return out
+
+def patched_conv2d_layer_forward(self, x, gain=1):
+    w = self.weight
+    x = conv2d_resample.conv2d_resample(x=x, w=w, f=self.resample_filter, up=self.up, down=self.down,
+                                        padding=self.padding)
+    act_gain = self.act_gain * gain
+    act_clamp = self.conv_clamp * gain if self.conv_clamp is not None else None
+    out = bias_act.bias_act(x, self.bias, act=self.activation, gain=act_gain, clamp=act_clamp)
+    return out
+
+def patched_modulated_conv2d_forward(self, x, style):
+    batch, in_channels, height, width = x.shape
+    style = self.affine(style).view(batch, 1, in_channels, 1, 1)
+    weight = self.weight * style
+
+    if self.demodulate:
+        decoefs = (weight.pow(2).sum(dim=[2, 3, 4]) + 1e-8).rsqrt()
+        weight = weight * decoefs.view(batch, self.out_channels, 1, 1, 1)
+
+    weight = weight.view(batch * self.out_channels, in_channels, self.kernel_size, self.kernel_size)
+    x = x.view(1, batch * in_channels, height, width)
+    x = conv2d_resample.conv2d_resample(x=x, w=weight, f=self.resample_filter, up=self.up, down=self.down,
+                                        padding=self.padding, groups=batch)
+    out = x.view(batch, self.out_channels, *x.shape[2:])
+    return out
+
+import networks.basic_module as basic_module
+basic_module.FullyConnectedLayer.forward = patched_fc_forward
+basic_module.Conv2dLayer.forward = patched_conv2d_layer_forward
+basic_module.ModulatedConv2d.forward = patched_modulated_conv2d_forward
 
 # Now import generator safely
 from networks.mat import Generator, SwinTransformerBlock, window_partition, window_reverse
@@ -289,7 +329,7 @@ def patched_swin_forward(self, x, x_size, mask=None):
             mask = shifted_mask
 
     # Split weights of self.fuse to bypass cat + FullyConnectedLayer ANE compiler crash
-    w = self.fuse.weight * self.fuse.weight_gain
+    w = self.fuse.weight
     w1 = w[:, :self.dim]
     w2 = w[:, self.dim:]
     
@@ -298,8 +338,6 @@ def patched_swin_forward(self, x, x_size, mask=None):
     x_sum = x1 + x2
     
     b = self.fuse.bias
-    if b is not None and self.fuse.bias_gain != 1:
-        b = b * self.fuse.bias_gain
         
     import torch_utils.ops.bias_act as bias_act
     x = bias_act.bias_act(x_sum, b, act=self.fuse.activation, dim=x_sum.ndim-1)
@@ -381,6 +419,23 @@ def main():
     print(f"Loading checkpoint from {weight_path}...")
     state_dict = torch.load(weight_path, map_location='cpu')
     G.load_state_dict(state_dict)
+    
+    # Fold weight and bias gains statically
+    print("Folding weight/bias gains statically into parameter tensors...")
+    with torch.no_grad():
+        for name, module in G.named_modules():
+            class_name = module.__class__.__name__
+            if class_name == 'FullyConnectedLayer':
+                if hasattr(module, 'weight_gain') and module.weight_gain != 1.0:
+                    module.weight.copy_(module.weight * module.weight_gain)
+                    module.weight_gain = 1.0
+                if module.bias is not None and hasattr(module, 'bias_gain') and module.bias_gain != 1.0:
+                    module.bias.copy_(module.bias * module.bias_gain)
+                    module.bias_gain = 1.0
+            elif class_name in ('Conv2dLayer', 'ModulatedConv2d'):
+                if hasattr(module, 'weight_gain') and module.weight_gain != 1.0:
+                    module.weight.copy_(module.weight * module.weight_gain)
+                    module.weight_gain = 1.0
     
     # Create Wrapper
     wrapper = MATCoreMLWrapper(G).eval()
