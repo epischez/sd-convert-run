@@ -230,29 +230,13 @@ def patched_conv2d_resample(x, w, f=None, up=1, down=1, padding=0, groups=1, fli
 conv2d_resample.conv2d_resample = patched_conv2d_resample
 
 def patched_fc_forward(self, x):
-    # self.weight has shape [out_features, in_features]
-    w_conv = self.weight.view(self.weight.shape[0], self.weight.shape[1], 1, 1)
+    w = self.weight
     b = self.bias
-    
-    ndim = x.ndim
-    if ndim == 2:
-        x_4d = x.unsqueeze(2).unsqueeze(3)
-        out_4d = F.conv2d(x_4d, w_conv, b, stride=1, padding=0)
-        out = out_4d.squeeze(3).squeeze(2)
-    elif ndim == 3:
-        x_4d = x.transpose(1, 2).unsqueeze(3)
-        out_4d = F.conv2d(x_4d, w_conv, b, stride=1, padding=0)
-        out = out_4d.squeeze(3).transpose(1, 2)
+    x = x.matmul(w.t())
+    if self.activation == 'linear' and b is not None:
+        out = x + b.reshape([-1 if i == x.ndim-1 else 1 for i in range(x.ndim)])
     else:
-        x = x.matmul(self.weight.t())
-        if b is not None:
-            out = x + b.reshape([-1 if i == x.ndim-1 else 1 for i in range(x.ndim)])
-        else:
-            out = x
-            
-    if self.activation != 'linear':
-        out = bias_act.bias_act(out, act=self.activation, dim=out.ndim-1)
-        
+        out = bias_act.bias_act(x, b, act=self.activation, dim=x.ndim-1)
     return out
 
 def patched_conv2d_layer_forward(self, x, gain=1):
@@ -343,15 +327,20 @@ def patched_swin_forward(self, x, x_size, mask=None):
         if mask is not None:
             mask = shifted_mask
 
-    # Run separated static-weight linear layers to avoid cat and dynamic matmul slicing
-    x1 = self.fuse1(shortcut)
-    x2 = self.fuse2(x)
-    x_sum = x1 + x2
+    # 4D Channels-First Concat and 1x1 Conv2D for self.fuse
+    shortcut_4d = shortcut.view(B, H, W, C).permute(0, 3, 1, 2)
+    x_4d = x.view(B, H, W, C).permute(0, 3, 1, 2)
     
+    z_4d = torch.cat([shortcut_4d, x_4d], dim=1)
+    
+    w_conv = self.fuse.weight.view(self.fuse.weight.shape[0], self.fuse.weight.shape[1], 1, 1)
     b = self.fuse.bias
-        
+    fuse_out = F.conv2d(z_4d, w_conv, None, stride=1, padding=0)
+    
     import torch_utils.ops.bias_act as bias_act
-    x = bias_act.bias_act(x_sum, b, act=self.fuse.activation, dim=x_sum.ndim-1)
+    fuse_out = bias_act.bias_act(fuse_out, b, act=self.fuse.activation, dim=1)
+    
+    x = fuse_out.permute(0, 2, 3, 1).view(B, H * W, C)
     
     x = self.mlp(x)
     return x, mask
@@ -448,25 +437,7 @@ def main():
                     module.weight.copy_(module.weight * module.weight_gain)
                     module.weight_gain = 1.0
 
-    # Split self.fuse in SwinTransformerBlocks
-    print("Splitting self.fuse in SwinTransformerBlocks...")
-    for name, module in G.named_modules():
-        if module.__class__.__name__ == 'SwinTransformerBlock':
-            dim = module.dim
-            # Create two new FullyConnectedLayer modules without bias (bias is applied in bias_act)
-            fuse1 = basic_module.FullyConnectedLayer(in_features=dim, out_features=dim, bias=False, activation='linear')
-            fuse2 = basic_module.FullyConnectedLayer(in_features=dim, out_features=dim, bias=False, activation='linear')
-            
-            with torch.no_grad():
-                fuse1.weight.copy_(module.fuse.weight[:, :dim])
-                fuse1.weight_gain = 1.0
-                
-                fuse2.weight.copy_(module.fuse.weight[:, dim:])
-                fuse2.weight_gain = 1.0
-            
-            module.add_module('fuse1', fuse1)
-            module.add_module('fuse2', fuse2)
-    
+
     # Create Wrapper
     wrapper = MATCoreMLWrapper(G).eval()
     
