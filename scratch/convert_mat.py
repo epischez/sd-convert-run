@@ -328,13 +328,9 @@ def patched_swin_forward(self, x, x_size, mask=None):
         if mask is not None:
             mask = shifted_mask
 
-    # Split weights of self.fuse to bypass cat + FullyConnectedLayer ANE compiler crash
-    w = self.fuse.weight
-    w1 = w[:, :self.dim]
-    w2 = w[:, self.dim:]
-    
-    x1 = shortcut.matmul(w1.t())
-    x2 = x.matmul(w2.t())
+    # Run separated static-weight linear layers to avoid cat and dynamic matmul slicing
+    x1 = self.fuse1(shortcut)
+    x2 = self.fuse2(x)
     x_sum = x1 + x2
     
     b = self.fuse.bias
@@ -436,6 +432,25 @@ def main():
                 if hasattr(module, 'weight_gain') and module.weight_gain != 1.0:
                     module.weight.copy_(module.weight * module.weight_gain)
                     module.weight_gain = 1.0
+
+    # Split self.fuse in SwinTransformerBlocks
+    print("Splitting self.fuse in SwinTransformerBlocks...")
+    for name, module in G.named_modules():
+        if module.__class__.__name__ == 'SwinTransformerBlock':
+            dim = module.dim
+            # Create two new FullyConnectedLayer modules without bias (bias is applied in bias_act)
+            fuse1 = basic_module.FullyConnectedLayer(in_features=dim, out_features=dim, bias=False, activation='linear')
+            fuse2 = basic_module.FullyConnectedLayer(in_features=dim, out_features=dim, bias=False, activation='linear')
+            
+            with torch.no_grad():
+                fuse1.weight.copy_(module.fuse.weight[:, :dim])
+                fuse1.weight_gain = 1.0
+                
+                fuse2.weight.copy_(module.fuse.weight[:, dim:])
+                fuse2.weight_gain = 1.0
+            
+            module.add_module('fuse1', fuse1)
+            module.add_module('fuse2', fuse2)
     
     # Create Wrapper
     wrapper = MATCoreMLWrapper(G).eval()
