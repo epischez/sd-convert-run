@@ -232,12 +232,28 @@ conv2d_resample.conv2d_resample = patched_conv2d_resample
 def patched_fc_forward(self, x):
     w = self.weight
     b = self.bias
-    # Use F.linear to force coremltools to compile it as a static Float16 linear layer
-    if self.activation == 'linear':
-        out = F.linear(x, w, b)
+    
+    ndim = x.ndim
+    if ndim == 2:
+        x_4d = x.unsqueeze(2).unsqueeze(3)
+        conv_bias = b if self.activation == 'linear' else None
+        out_4d = F.conv2d(x_4d, w, conv_bias, stride=1, padding=0)
+        out = out_4d.squeeze(3).squeeze(2)
+    elif ndim == 3:
+        x_4d = x.transpose(1, 2).unsqueeze(3)
+        conv_bias = b if self.activation == 'linear' else None
+        out_4d = F.conv2d(x_4d, w, conv_bias, stride=1, padding=0)
+        out = out_4d.squeeze(3).transpose(1, 2)
     else:
-        x_lin = F.linear(x, w, None)
-        out = bias_act.bias_act(x_lin, b, act=self.activation, dim=x_lin.ndim-1)
+        # Fallback for ndim > 3
+        w_2d = w.squeeze(3).squeeze(2)
+        out = x.matmul(w_2d.t())
+        if self.activation == 'linear' and b is not None:
+            out = out + b.reshape([-1 if i == x.ndim-1 else 1 for i in range(x.ndim)])
+            
+    if self.activation != 'linear':
+        out = bias_act.bias_act(out, b, act=self.activation, dim=out.ndim-1)
+        
     return out
 
 def patched_conv2d_layer_forward(self, x, gain=1):
@@ -332,8 +348,8 @@ def patched_swin_forward(self, x, x_size, mask=None):
     shortcut_4d = shortcut.view(B, H, W, C).permute(0, 3, 1, 2)
     x_4d = x.view(B, H, W, C).permute(0, 3, 1, 2)
     
-    w_conv1 = self.fuse_w1.view(C, C, 1, 1)
-    w_conv2 = self.fuse_w2.view(C, C, 1, 1)
+    w_conv1 = self.fuse_w1
+    w_conv2 = self.fuse_w2
     
     out1 = F.conv2d(shortcut_4d, w_conv1, None, stride=1, padding=0)
     out2 = F.conv2d(x_4d, w_conv2, None, stride=1, padding=0)
@@ -450,9 +466,18 @@ def main():
                 w = module.fuse.weight
                 w1 = w[:, :dim].clone().detach()
                 w2 = w[:, dim:].clone().detach()
-            # Register split weights as Parameters so coremltools casts them to Float16 correctly
-            module.register_parameter('fuse_w1', nn.Parameter(w1, requires_grad=False))
-            module.register_parameter('fuse_w2', nn.Parameter(w2, requires_grad=False))
+            # Register split weights directly as 4D Parameters
+            module.register_parameter('fuse_w1', nn.Parameter(w1.view(dim, dim, 1, 1), requires_grad=False))
+            module.register_parameter('fuse_w2', nn.Parameter(w2.view(dim, dim, 1, 1), requires_grad=False))
+
+    # Reshape FullyConnectedLayer weights to 4D for Conv2D execution
+    print("Reshaping FullyConnectedLayer weights to 4D for Conv2D execution...")
+    for name, module in G.named_modules():
+        if module.__class__.__name__ == 'FullyConnectedLayer':
+            with torch.no_grad():
+                w = module.weight
+                w_4d = w.view(w.shape[0], w.shape[1], 1, 1)
+                module.weight = nn.Parameter(w_4d, requires_grad=False)
 
     # Create Wrapper
     wrapper = MATCoreMLWrapper(G).eval()
