@@ -288,8 +288,22 @@ def patched_swin_forward(self, x, x_size, mask=None):
         if mask is not None:
             mask = shifted_mask
 
-    # Correct MAT FFN logic (matches networks/mat.py)
-    x = self.fuse(torch.cat([shortcut, x], dim=-1))
+    # Split weights of self.fuse to bypass cat + FullyConnectedLayer ANE compiler crash
+    w = self.fuse.weight * self.fuse.weight_gain
+    w1 = w[:, :self.dim]
+    w2 = w[:, self.dim:]
+    
+    x1 = shortcut.matmul(w1.t())
+    x2 = x.matmul(w2.t())
+    x_sum = x1 + x2
+    
+    b = self.fuse.bias
+    if b is not None and self.fuse.bias_gain != 1:
+        b = b * self.fuse.bias_gain
+        
+    import torch_utils.ops.bias_act as bias_act
+    x = bias_act.bias_act(x_sum, b, act=self.fuse.activation, dim=x_sum.ndim-1)
+    
     x = self.mlp(x)
     return x, mask
 
