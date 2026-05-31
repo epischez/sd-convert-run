@@ -399,15 +399,18 @@ class MATCoreMLWrapper(nn.Module):
         # image shape: (1, 3, 512, 512), values in range [-1.0, 1.0] (from CoreML input scale & bias)
         # mask shape: (1, 1, 512, 512), values in range [0.0, 1.0] (from CoreML input scale & bias)
         
+        # Invert mask: iOS mask has 1.0 for hole (subject), but PyTorch MAT expects 0.0 for hole / 1.0 for keep.
+        inverted_mask = 1.0 - mask
+        
         # Run MAT generator
-        # noise_mode='const' makes it deterministic (using fixed noise tensors)
+        # noise_mode='none' makes it deterministic (using fixed noise tensors)
         out = self.generator(
             image,
-            mask,
+            inverted_mask,
             self.fixed_z,
             self.fixed_c,
             truncation_psi=1.0,
-            noise_mode='const'
+            noise_mode='none'
         )
         
         # out shape: (1, 3, 512, 512), range: [-1.0, 1.0]
