@@ -327,15 +327,18 @@ def patched_swin_forward(self, x, x_size, mask=None):
         if mask is not None:
             mask = shifted_mask
 
-    # 4D Channels-First Concat and 1x1 Conv2D for self.fuse
+    # Concat-free Split 4D 1x1 Conv2D for self.fuse
     shortcut_4d = shortcut.view(B, H, W, C).permute(0, 3, 1, 2)
     x_4d = x.view(B, H, W, C).permute(0, 3, 1, 2)
     
-    z_4d = torch.cat([shortcut_4d, x_4d], dim=1)
+    w_conv1 = self.fuse_w1.view(C, C, 1, 1)
+    w_conv2 = self.fuse_w2.view(C, C, 1, 1)
     
-    w_conv = self.fuse.weight.view(self.fuse.weight.shape[0], self.fuse.weight.shape[1], 1, 1)
+    out1 = F.conv2d(shortcut_4d, w_conv1, None, stride=1, padding=0)
+    out2 = F.conv2d(x_4d, w_conv2, None, stride=1, padding=0)
+    
+    fuse_out = out1 + out2
     b = self.fuse.bias
-    fuse_out = F.conv2d(z_4d, w_conv, None, stride=1, padding=0)
     
     import torch_utils.ops.bias_act as bias_act
     fuse_out = bias_act.bias_act(fuse_out, b, act=self.fuse.activation, dim=1)
@@ -437,6 +440,17 @@ def main():
                     module.weight.copy_(module.weight * module.weight_gain)
                     module.weight_gain = 1.0
 
+    # Split self.fuse in SwinTransformerBlocks statically
+    print("Splitting self.fuse weights statically in SwinTransformerBlocks...")
+    for name, module in G.named_modules():
+        if module.__class__.__name__ == 'SwinTransformerBlock':
+            dim = module.dim
+            with torch.no_grad():
+                w = module.fuse.weight
+                w1 = w[:, :dim].clone().detach()
+                w2 = w[:, dim:].clone().detach()
+            module.register_buffer('fuse_w1', w1)
+            module.register_buffer('fuse_w2', w2)
 
     # Create Wrapper
     wrapper = MATCoreMLWrapper(G).eval()
