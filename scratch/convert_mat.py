@@ -449,8 +449,9 @@ def main():
                 w = module.fuse.weight
                 w1 = w[:, :dim].clone().detach()
                 w2 = w[:, dim:].clone().detach()
-            module.register_buffer('fuse_w1', w1)
-            module.register_buffer('fuse_w2', w2)
+            # Register split weights as Parameters so coremltools casts them to Float16 correctly
+            module.register_parameter('fuse_w1', nn.Parameter(w1, requires_grad=False))
+            module.register_parameter('fuse_w2', nn.Parameter(w2, requires_grad=False))
 
     # Create Wrapper
     wrapper = MATCoreMLWrapper(G).eval()
