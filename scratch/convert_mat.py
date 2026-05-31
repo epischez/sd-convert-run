@@ -307,8 +307,37 @@ basic_module.ModulatedConv2d.forward = patched_modulated_conv2d_forward
 basic_module.normalize_2nd_moment = patched_normalize_2nd_moment
 
 # Now import generator safely
-from networks.mat import Generator, SwinTransformerBlock, Conv2dLayerPartial, window_partition, window_reverse
+from networks.mat import Generator, SwinTransformerBlock, Conv2dLayerPartial, WindowAttention, window_partition, window_reverse
+
+def patched_window_attn_forward(self, x, mask_windows=None, mask=None):
+    B_, N, C = x.shape
+    norm_x = F.normalize(x, p=2.0, dim=-1, eps=1e-4)
+    q = self.q(norm_x).reshape(B_, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+    k = self.k(norm_x).view(B_, -1, self.num_heads, C // self.num_heads).permute(0, 2, 3, 1)
+    v = self.v(x).view(B_, -1, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+
+    attn = (q @ k) * self.scale
+
+    if mask is not None:
+        nW = mask.shape[0]
+        attn = attn.view(B_ // nW, nW, self.num_heads, N, N) + mask.unsqueeze(1).unsqueeze(0)
+        attn = attn.view(-1, self.num_heads, N, N)
+
+    if mask_windows is not None:
+        attn_mask_windows = mask_windows.squeeze(-1).unsqueeze(1).unsqueeze(1)
+        attn = attn + attn_mask_windows.masked_fill(attn_mask_windows == 0, float(-100.0)).masked_fill(
+            attn_mask_windows == 1, float(0.0))
+        with torch.no_grad():
+            mask_windows = torch.clamp(torch.sum(mask_windows, dim=1, keepdim=True), 0, 1).repeat(1, N, 1)
+
+    attn = self.softmax(attn)
+
+    x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
+    x = self.proj(x)
+    return x, mask_windows
+
 Conv2dLayerPartial.forward = patched_conv_partial_forward
+WindowAttention.forward = patched_window_attn_forward
 
 def patched_swin_forward(self, x, x_size, mask=None):
     H, W = x_size
