@@ -232,11 +232,12 @@ conv2d_resample.conv2d_resample = patched_conv2d_resample
 def patched_fc_forward(self, x):
     w = self.weight
     b = self.bias
-    x = x.matmul(w.t())
-    if self.activation == 'linear' and b is not None:
-        out = x + b.reshape([-1 if i == x.ndim-1 else 1 for i in range(x.ndim)])
+    # Use F.linear to force coremltools to compile it as a static Float16 linear layer
+    if self.activation == 'linear':
+        out = F.linear(x, w, b)
     else:
-        out = bias_act.bias_act(x, b, act=self.activation, dim=x.ndim-1)
+        x_lin = F.linear(x, w, None)
+        out = bias_act.bias_act(x_lin, b, act=self.activation, dim=x_lin.ndim-1)
     return out
 
 def patched_conv2d_layer_forward(self, x, gain=1):
