@@ -1,0 +1,62 @@
+name: Convert VAE Encoder Only to CoreML
+
+on:
+  workflow_dispatch:
+
+jobs:
+  convert:
+    name: Convert VAE Encoder Only
+    runs-on: macos-14
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Check Xcode compiler
+        run: |
+          xcodebuild -version
+          xcrun --find metal
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade torch coremltools peft accelerate requests hf_transfer diffusers transformers huggingface_hub
+
+      - name: Clone Apple ML Stable Diffusion
+        run: |
+          git clone https://github.com/apple/ml-stable-diffusion.git
+          cd ml-stable-diffusion
+
+      - name: Install Local ml-stable-diffusion Package
+        run: |
+          pip install -e ml-stable-diffusion
+          pip install "huggingface_hub>=0.25.0,<1.0"
+
+      - name: Verify Environment
+        run: |
+          python --version
+          python -c "import torch; print('PyTorch Version:', torch.__version__)"
+          python -c "import coremltools; print('CoreMLTools Version:', coremltools.__version__)"
+
+      - name: Run Model Conversion and Compilation
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_HUB_ENABLE_HF_TRANSFER: 1
+          HF_HUB_DISABLE_XET: 1
+          HF_HUB_DOWNLOAD_TIMEOUT: 120
+          HF_HUB_ETAG_TIMEOUT: 60
+          DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+        run: |
+          python scratch/convert_vae_encoder_only.py
+
+      - name: Upload VAE Encoder Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vae-encoder-only
+          path: vae_encoder_only.zip
+          if-no-files-found: error
+          retention-days: 7
