@@ -1,0 +1,54 @@
+name: Convert Storybook LCM Model to CoreML
+
+on:
+  workflow_dispatch:
+
+jobs:
+  convert:
+    name: Merge & Convert Storybook Model
+    # macOS-latest is recommended because it has Xcode and will directly produce precompiled .mlmodelc assets.
+    # If you need to run on Linux to save action minutes, change this to ubuntu-latest.
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install PyTorch and ML Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install peft accelerate requests hf_transfer diffusers transformers torch coremltools
+
+      - name: Clone Apple ML Stable Diffusion
+        run: |
+          git clone https://github.com/apple/ml-stable-diffusion.git
+          cd ml-stable-diffusion
+          pip install -e .
+
+      - name: Verify Environment
+        run: |
+          python --version
+          python -c "import torch; print('PyTorch Version:', torch.__version__)"
+          python -c "import coremltools; print('CoreMLTools Version:', coremltools.__version__)"
+
+      - name: Run Model Conversion and Compilation
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_HUB_ENABLE_HF_TRANSFER: 1
+          HF_HUB_DISABLE_XET: 1
+          HF_HUB_DOWNLOAD_TIMEOUT: 120
+          HF_HUB_ETAG_TIMEOUT: 60
+        run: |
+          python scratch/convert_storybook_lcm.py
+
+      - name: Upload CoreML Model Archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: storybook-lcm-coreml
+          path: storybook_lcm.zip
+          if-no-files-found: error
+          retention-days: 7
