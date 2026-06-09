@@ -106,7 +106,6 @@ cmd = [
     "--chunk-unet",
     "--convert-vae-decoder",
     "--convert-vae-encoder", # Supports I2I/Inpainting!
-    "--quantize-nbits", "8",  # Quantize UNet to 8-bit (~430MB per chunk) to meet 1G size limit and 2G RAM limit
     "--model-version", temp_fused_dir,
     "--attention-implementation", "ORIGINAL",
     "-o", temp_coreml_dir,
