@@ -1,11 +1,11 @@
-name: Convert Storybook LCM Model to CoreML
+name: Convert Cartoon3D Standard Model to CoreML
 
 on:
   workflow_dispatch:
 
 jobs:
   convert:
-    name: Merge & Convert Storybook Model
+    name: Convert Cartoon3D Standard Model
     runs-on: macos-14
     steps:
       - name: Checkout Repository
@@ -51,12 +51,12 @@ jobs:
           HF_HUB_ETAG_TIMEOUT: 60
           DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
         run: |
-          python scratch/convert_storybook_lcm.py
+          python scratch/convert_cartoon3d_standard.py
 
       - name: Upload CoreML Model Archive
         uses: actions/upload-artifact@v4
         with:
-          name: storybook-lcm-coreml
-          path: storybook_lcm.zip
+          name: sd-models-cartoon3d-standard
+          path: sd_models_cartoon3d_standard.zip
           if-no-files-found: error
           retention-days: 7
